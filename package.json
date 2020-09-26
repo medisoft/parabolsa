@@ -9,11 +9,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "bitcoin-core": "^3.0.0",
     "bluebird": "^3.7.2",
     "dotenv": "^8.2.0",
     "lodash": "^4.17.20",
     "node-bittrex-api": "^0.8.3",
     "node-postgres": "^0.6.2",
-    "pg": "^8.3.3"
+    "pg": "^8.3.3",
+    "redis": "^3.0.2"
   }
 }
