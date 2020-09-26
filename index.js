@@ -42,6 +42,7 @@ bluebird.promisifyAll(redis);
 //          luego envia el LTC a Bitso
 //          luego intercambia LTC por MXN
 //          luego envia MXN a GBM
+//          luego envia un email indicando que hay que comprar alguna fibra
 const run = async () => {
 try {
 	const balances = await bittrex.getbalancesAsync();
