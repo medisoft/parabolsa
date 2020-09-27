@@ -177,10 +177,7 @@ const run = async () => {
                 await redis.lpushAsync(qFROMBITTREX, JSON.stringify(trade));
                 await redis.lremAsync(qTRADES_BTCLTC+':w', 0, tx);
             }
-        }        
-
-        //console.log(await domitai.balance('LTC'));
-        
+        }                
     
         // Monitorea envios de LTC a Domitai, y si ya llegaron, realiza la conversion por MXN
         while((await redis.rpoplpushAsync(qFROMBITTREX+':w', qFROMBITTREX)));
@@ -191,13 +188,12 @@ const run = async () => {
                 if((await ltc_wallet.getRawTransaction(o.TxId, true)).confirmations>6) {
                     const ltc_mxn = await domitai.ticker('ltc_mxn');
                     const {Amount}=o, {bid, ask}=ltc_mxn.payload, rate = ((Number(ask)+Number(bid))/2).toFixed(2);
-                    const trade = await domitai.sell('ltc_mxn', Amount, rate, {magic:99});
+                    const trade = await domitai.sell('ltc_mxn', (Number(Amount)*0.9).toFixed(8), rate, {magic:99});
                     await redis.lpushAsync(qTRADES_LTCMXN, JSON.stringify(trade));
                     await redis.lremAsync(qFROMBITTREX+':w', 0, tx);
                 }
             }
         }  
-
 
         // Monitorea la operacion de venta de LTC, y una vez hecha, realiza el retiro a GBM
         while((await redis.rpoplpushAsync(qTRADES_LTCMXN+':w', qTRADES_LTCMXN)));
@@ -206,10 +202,19 @@ const run = async () => {
             o=o.payload.find(t=>t.id===JSON.parse(tx).payload.id);
             if(!o) {
                 const {total, id} = JSON.parse(tx).payload, amount=(total*0.995).toFixed(2), description=`Conversion de RDD ${id}`;
-                const extra = {address:process.env.GBM_TRADING};
-                console.log('Orden finalizada', amount, description, extra);
-//                redis.lpush(qRETIROS, JSON.stringify(await domitai.withdraw({fee:2, amount, extra, description})));;
-//                await redis.lremAsync(qTRADES_LTCMXN+':w', 0, tx);
+                const address = process.env.GBM_TRADING;
+                const extra = {
+                    referenciaNumerica: id.toString().slice(-7), 
+                    referenciaAlfanumerica: null, 
+                    nombreBeneficiario: process.env.NOMBRE_BENEFICIARIO, 
+                    institucionContraparte: process.env.INSTITUCION_CONTRAPARTE,
+                    address
+                }, fee = 2;
+                const recipients = {
+                    [address]: { fee, amount, extra, description }
+                };
+                redis.lpush(qRETIROS, JSON.stringify(await domitai.withdraw('MXN', recipients)));
+                await redis.lremAsync(qTRADES_LTCMXN+':w', 0, tx);
             }
         }  
 
