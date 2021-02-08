@@ -6,6 +6,7 @@ const bitcoin_core = require('bitcoin-core');
 const Redis = require("redis");
 const boolify = require('boolean').boolean;
 const Domitai = require('@domitai/domitai-sdk');
+const BC = require('bignumber.js');
 
 bluebird.promisifyAll(bittrex);
 
@@ -54,7 +55,9 @@ const qSENDTOEXCHANGE='sent_to_bittrex'
 , qTRADES_RDDBTC='trades:rdd_btc'
 , qTRADES_BTCLTC='trades:btc_ltc'
 , qTRADES_LTCMXN='trades:ltc_mxn'
+, qTRADES_RDDMXN='trades:rdd_mxn'
 , qFROMBITTREX='transfers:frombittrex'
+, qFROMWALLET='transfers:fromwallet'
 , qRETIROS='retiros:domitai';
 
 // Pasos:
@@ -82,17 +85,26 @@ const run = async () => {
         const ultimo_balance_wallet = Number(await wallet.getBalance());
         if(!process.env.MIN_AMOUNT) throw new Error('No existe el MIN_AMOUNT');
         const rdd_btc = await bittrex.gettickerAsync({market:'BTC-RDD'});
+        const rdd_mxn = await domitai.ticker('rdd_mxn');
         const usd_btc = await bittrex.gettickerAsync({market:'USD-BTC'});
         const monto_en_usd = (rdd_btc.result.Bid*cambio) * usd_btc.result.Ask;
-        console.log('El monto nuevo generado es %s RDD / %s USD', cambio.toFixed(8), monto_en_usd.toFixed(2));
+        const monto_en_mxn = (rdd_mxn.payload.bid*cambio);
+        console.log('El monto nuevo generado es %s RDD / %s USD / %s MXN', cambio.toFixed(8), monto_en_usd.toFixed(2), monto_en_mxn.toFixed(2));
         // Si hay monto suficiente, realiza el envio de RDDs
         if(cambio>=MIN_AMOUNT && Math.floor(ultimo_balance_wallet)>=Math.floor(ultimo_balance_registrado) && monto_en_usd>=MIN_AMOUNT_USD) {
-            const balances = await bittrex.getbalancesAsync();
-            const rdd = balances.result.find(b=>b.Currency==='RDD')
-            console.log('Enviando %s RDD (%s USD) a Bittrex %s', cambio, monto_en_usd, RDD_BITTREX);
-            await wallet.walletPassphrase(WALLET_PASSPHRASE, 60, false);
-            const tx = await wallet.sendToAddress(RDD_BITTREX, cambio);
-            redis.lpush(qSENDTOEXCHANGE, tx);
+			if(BC.BigNumber(rdd_mxn.payload.bid).gte(0.08)) {
+				console.log('Enviando %s RDD (%s MXN) a Domitai %s', cambio, monto_en_mxn, RDD_DOMITAI);
+				await wallet.walletPassphrase(WALLET_PASSPHRASE, 60, false);
+				const tx = await wallet.sendToAddress(RDD_DOMITAI, cambio);
+				await redis.lpushAsync(qFROMWALLET, JSON.stringify(tx));
+			} else {
+				const balances = await bittrex.getbalancesAsync();
+				const rdd = balances.result.find(b=>b.Currency==='RDD')
+				console.log('Enviando %s RDD (%s USD) a Bittrex %s', cambio, monto_en_usd, RDD_BITTREX);
+				await wallet.walletPassphrase(WALLET_PASSPHRASE, 60, false);
+				const tx = await wallet.sendToAddress(RDD_BITTREX, cambio);
+				redis.lpush(qSENDTOEXCHANGE, tx);
+			}
             await wallet.walletPassphrase(WALLET_PASSPHRASE, 999999999, true);
         }
 
@@ -219,6 +231,44 @@ const run = async () => {
                 };
                 redis.lpush(qRETIROS, JSON.stringify(await domitai.withdraw('MXN', recipients)));
                 await redis.lremAsync(qTRADES_LTCMXN+':w', 0, tx);
+            }
+        }  
+
+
+
+        // Monitorea envios de RDD a Domitai, y si ya llegaron, realiza la conversion por MXN
+        while((await redis.rpoplpushAsync(qFROMWALLET+':w', qFROMWALLET)));
+        while((txid=await redis.rpoplpushAsync(qFROMWALLET, qFROMWALLET+':w'))) {
+            const tx = await wallet.getTransaction(txid);
+            if(tx.confirmations>=MIN_CONFIRMATIONS*3) {
+				const rdd_mxn = await domitai.ticker('rdd_mxn');
+				const {amount: Amount}=tx, {bid, ask}=rdd_mxn.payload, rate = ((Number(ask)+Number(bid))/2).toFixed(2);
+				const trade = await domitai.sell('rdd_mxn', (Number(Amount)*0.5).toFixed(8), rate, {magic:99});
+				await redis.lpushAsync(qTRADES_RDDMXN, JSON.stringify(trade));
+				await redis.lremAsync(qFROMWALLET+':w', 0, tx);
+            }
+        }  
+
+        // Monitorea la operacion de venta de RDD, y una vez hecha, realiza el retiro a GBM
+        while((await redis.rpoplpushAsync(qTRADES_RDDMXN+':w', qTRADES_RDDMXN)));
+        while((tx=await redis.rpoplpushAsync(qTRADES_RDDMXN, qTRADES_RDDMXN+':w'))) {
+            let o = await domitai.orders();
+            o=o.payload.find(t=>t.id===JSON.parse(tx).payload.id);
+            if(!o) {
+                const {total, id} = JSON.parse(tx).payload, amount=(total*0.995).toFixed(2), description=`Conversion de RDD ${id}`;
+                const address = process.env.GBM_CLABE;
+                const extra = {
+                    referenciaNumerica: id.toString().slice(-7), 
+                    referenciaAlfanumerica: null, 
+                    nombreBeneficiario: process.env.NOMBRE_BENEFICIARIO, 
+                    institucionContraparte: process.env.INSTITUCION_CONTRAPARTE,
+                    address
+                }, fee = 2;
+                const recipients = {
+                    [address]: { fee, amount, extra, description }
+                };
+                redis.lpush(qRETIROS, JSON.stringify(await domitai.withdraw('MXN', recipients)));
+                await redis.lremAsync(qTRADES_RDDMXN+':w', 0, tx);
             }
         }  
 

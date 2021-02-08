@@ -10,6 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "@domitai/domitai-sdk": "^1.0.11",
+    "bignumber.js": "^9.0.1",
     "bitcoin-core": "^3.0.0",
     "bluebird": "^3.7.2",
     "boolean": "^3.0.1",
