@@ -73,7 +73,7 @@ const qSENDTOEXCHANGE='sent_to_bittrex'
 //          luego envia un email indicando que hay que comprar alguna fibra
 
 
-const {RDD_BITTREX, WALLET_PASSPHRASE} = process.env;
+const {RDD_BITTREX, WALLET_PASSPHRASE, RDD_DOMITAI} = process.env;
 let {MIN_AMOUNT=9000, MIN_AMOUNT_USD=8, MIN_CONFIRMATIONS=50} = process.env;
 MIN_AMOUNT=Number(MIN_AMOUNT);
 MIN_AMOUNT_USD=Number(MIN_AMOUNT_USD);
@@ -132,16 +132,20 @@ const run = async () => {
                 const rdd = balances.result.find(b=>b.Currency==='RDD');
                 if(rdd.Available>=Math.abs(tx.amount)) {
                     const rdd_btc = await bittrex.gettickerAsync({market:'BTC-RDD'});
-                    console.log('Balance recibido, realizando intercambios (disponible %s @ %s = %s)', rdd.Available, rdd_btc.result.Bid.toFixed(8), Math.abs(tx.amount*rdd_btc.result.Bid).toFixed(8));
-                    const trade = await bittrex.selllimitAsync({
-                        market: 'BTC-RDD',
-                        quantity: Math.abs(tx.amount),
-                        rate: rdd_btc.result.Bid,
-                        timeInForce: 'GTC'
-                    });
+					if(Math.abs(tx.amount*rdd_btc.result.Bid)>=0.0005) {
+						console.log('Balance recibido en Bittrex, realizando intercambios (disponible %s @ %s = %s)', rdd.Available, rdd_btc.result.Bid.toFixed(8), Math.abs(tx.amount*rdd_btc.result.Bid).toFixed(8));
+						const trade = await bittrex.selllimitAsync({
+							market: 'BTC-RDD',
+							quantity: Math.abs(tx.amount),
+							rate: rdd_btc.result.Bid,
+							timeInForce: 'GTC'
+						});
 
-                    await redis.lpushAsync(qTRADES_RDDBTC, JSON.stringify(trade));
-                    await redis.lremAsync(qSENDTOEXCHANGE+':w', 0, txid);
+						await redis.lpushAsync(qTRADES_RDDBTC, JSON.stringify(trade));
+						await redis.lremAsync(qSENDTOEXCHANGE+':w', 0, txid);
+					} else {
+						console.log('Balance recibido en Bittrex, pero el monto no es suficiente, espero a que se acumule mas (disponible %s @ %s = %s)', rdd.Available, rdd_btc.result.Bid.toFixed(8), Math.abs(tx.amount*rdd_btc.result.Bid).toFixed(8));
+					}
                 }
             } else {
                 console.log('Esperando confirmaciones (%s/%s) para enviar %s RDD hacia BTC', tx.confirmations, MIN_CONFIRMATIONS, Math.abs(tx.amount));
@@ -238,7 +242,7 @@ const run = async () => {
 
         // Monitorea envios de RDD a Domitai, y si ya llegaron, realiza la conversion por MXN
         while((await redis.rpoplpushAsync(qFROMWALLET+':w', qFROMWALLET)));
-        while((txid=await redis.rpoplpushAsync(qFROMWALLET, qFROMWALLET+':w'))) {
+        while((txid=await redis.rpoplpushAsync(qFROMWALLET, qFROMWALLET+':w').then(JSON.parse))) {
             const tx = await wallet.getTransaction(txid);
             if(tx.confirmations>=MIN_CONFIRMATIONS*3) {
 				const rdd_mxn = await domitai.ticker('rdd_mxn');
