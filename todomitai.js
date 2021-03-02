@@ -239,17 +239,17 @@ const run = async () => {
         }  
 
 
-
         // Monitorea envios de RDD a Domitai, y si ya llegaron, realiza la conversion por MXN
         while((await redis.rpoplpushAsync(qFROMWALLET+':w', qFROMWALLET)));
         while((txid=await redis.rpoplpushAsync(qFROMWALLET, qFROMWALLET+':w').then(JSON.parse))) {
             const tx = await wallet.getTransaction(txid);
             if(tx.confirmations>=MIN_CONFIRMATIONS*3) {
+				console.log('Ya llegaron los RDD a Domitai, los cambio por pesos.');
 				const rdd_mxn = await domitai.ticker('rdd_mxn');
 				const {amount: Amount}=tx, {bid, ask}=rdd_mxn.payload, rate = ((Number(ask)+Number(bid))/2).toFixed(2);
-				const trade = await domitai.sell('rdd_mxn', (Number(Amount)*0.5).toFixed(8), rate, {magic:99});
+				const trade = await domitai.sell('rdd_mxn', (Math.abs(Number(Amount))*0.5).toFixed(8), rate, {magic:99});
 				await redis.lpushAsync(qTRADES_RDDMXN, JSON.stringify(trade));
-				await redis.lremAsync(qFROMWALLET+':w', 0, tx);
+				await redis.lremAsync(qFROMWALLET+':w', 0, txid);
             }
         }  
 
